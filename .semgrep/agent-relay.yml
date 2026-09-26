@@ -1,0 +1,38 @@
+rules:
+  - id: agent-relay-subprocess-shell-true
+    message: Avoid shell=True in subprocess calls; shell execution is not allowed in Agent Relay automation paths.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)
+      - pattern: subprocess.check_call(..., shell=True, ...)
+      - pattern: subprocess.check_output(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+
+  - id: agent-relay-os-system
+    message: Avoid os.system; use bounded application APIs instead of shell execution.
+    severity: ERROR
+    languages: [python]
+    pattern: os.system(...)
+
+  - id: agent-relay-eval-exec
+    message: Avoid eval/exec; dynamic code execution is prohibited in Agent Relay.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: agent-relay-hardcoded-secret-assignment
+    message: Possible hardcoded secret, password, token, or API key assignment.
+    severity: WARNING
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $NAME = "..."
+          - pattern: $NAME = '...'
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i).*(password|secret|api[_-]?key|token|credential).*
+

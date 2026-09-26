@@ -57,7 +57,28 @@ from storage import (
     register_agent,
     task_for_participant,
 )
+from telemetry import (
+    REQUEST_ID_HEADER,
+    configure_logging,
+    configure_telemetry,
+    create_task_span,
+    current_trace_id,
+    instrument_app,
+    resolve_request_id,
+)
+from telemetry_metrics import (
+    is_task_create_request,
+    metrics_payload,
+    normalize_route,
+    record_http_request,
+    record_task_created,
+    record_task_error,
+    relay_error_type,
+)
 
+
+configure_logging()
+configure_telemetry()
 
 LOGGER = logging.getLogger("agent_relay")
 
@@ -119,19 +140,64 @@ app = FastAPI(title="Agent Relay", version="0.1.0", lifespan=lifespan)
 # ASGI transports used by small scripts do not always run lifespan handlers;
 # initialize the schema at import as well as during normal application startup.
 init_db()
+instrument_app(app)
 
 
 @app.exception_handler(RelayError)
-async def relay_error_handler(_request: Request, exc: RelayError) -> JSONResponse:
+async def relay_error_handler(request: Request, exc: RelayError) -> JSONResponse:
+    if is_task_create_request(request):
+        record_task_error(relay_error_type(exc.code))
     return error_response(exc.code, exc.message, exc.status_code)
 
 
 @app.exception_handler(RequestValidationError)
-async def request_validation_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+async def request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     # Avoid logging ``exc.errors()``: Pydantic includes submitted values and a
     # malformed claim body could otherwise put a credential in debug logs.
-    LOGGER.debug("request validation failed (%d error(s))", len(exc.errors()))
+    LOGGER.info(
+        "request validation failed",
+        extra={
+            "request_id": getattr(request.state, "request_id", None),
+            "trace_id": current_trace_id(),
+            "http_method": request.method,
+            "http_route": request.url.path,
+            "error_count": len(exc.errors()),
+        },
+    )
+    if is_task_create_request(request):
+        record_task_error("validation")
     return error_response("invalid_input", "The request is invalid.", 400)
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    request_id = resolve_request_id(request.headers.get(REQUEST_ID_HEADER))
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    status_code = 500
+    response: Response | None = None
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        duration_seconds = time.perf_counter() - started
+        duration_ms = round(duration_seconds * 1000, 2)
+        route = normalize_route(request)
+        record_http_request(request.method, route, status_code, duration_seconds)
+        LOGGER.info(
+            "http request completed",
+            extra={
+                "request_id": request_id,
+                "trace_id": current_trace_id(),
+                "http_method": request.method,
+                "http_route": route,
+                "http_status_code": status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+        if response is not None:
+            response.headers[REQUEST_ID_HEADER] = request_id
 
 
 @app.middleware("http")
@@ -150,6 +216,12 @@ async def body_size_limit(request: Request, call_next):
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    body, content_type = metrics_payload()
+    return Response(content=body, media_type=content_type)
 
 
 @app.get("/ready")
@@ -207,7 +279,12 @@ async def tasks_create(
         raise RelayError("invalid_input", "Idempotency-Key must be nonempty and at most 255 characters.", 400)
     for retry in range(3):
         try:
-            result = create_task(current.id, body.to, body.input, idempotency_key)
+            with create_task_span(current.id, body.to) as span:
+                result = create_task(current.id, body.to, body.input, idempotency_key)
+                if span is not None:
+                    span.set_attribute("task.id", result["task_id"])
+                    span.set_attribute("task.status", result["status"])
+            record_task_created(result["status"])
             return JSONResponse(status_code=201, content=result)
         except OperationalError as exc:
             if retry == 2 or "locked" not in str(exc).lower():

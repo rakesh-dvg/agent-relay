@@ -8,7 +8,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY main.py database.py storage.py schemas.py errors.py dashboard.py dashboard.html worker.py ./
+COPY main.py database.py storage.py schemas.py errors.py dashboard.py dashboard.html worker.py telemetry.py telemetry_metrics.py ./
 
 EXPOSE 8000
 

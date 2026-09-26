@@ -1,0 +1,22 @@
+groups:
+  - name: agent-relay
+    rules:
+      - alert: AgentRelayHighHTTP5xxRate
+        expr: |
+          (
+            sum(rate(agent_relay_http_requests_total{status_code=~"5.."}[5m]))
+            /
+            sum(rate(agent_relay_http_requests_total[5m]))
+          ) >= 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: agent-relay
+        annotations:
+          summary: Agent Relay users are experiencing elevated HTTP 5xx errors
+          description: |
+            The Agent Relay API has sustained an HTTP 5xx error rate of at least 5%
+            for five minutes. Users are receiving server errors from the API.
+            Inspect the Grafana Operations Overview dashboard, recent Loki logs,
+            and Tempo traces to identify affected routes and failing requests.
+          runbook_url: docs/runbooks/agent-relay-high-5xx.md

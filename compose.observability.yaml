@@ -1,0 +1,17 @@
+# Optional overlay for the application Compose stack.
+# Start the observability stack first, then run:
+#   docker compose -f compose.yaml -f compose.observability.yaml up -d
+services:
+  app:
+    environment:
+      OTEL_SDK_DISABLED: "false"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DEPLOYMENT_ENVIRONMENT: docker-compose
+    networks:
+      - default
+      - observability
+
+networks:
+  observability:
+    external: true
+    name: agent-relay-observability
